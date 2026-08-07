@@ -201,13 +201,13 @@ app.post('/api/gemini/analyze', async (c) => {
       let textData = '';
       
       for (const row of qRows) {
-        const formSessionStr = String(row.get('分科会を選択してください') || row.get('分科会名') || row._rawData[1] || '');
+        const formSessionStr = String(row.get('参加した分科会') || row.get('分科会を選択してください') || row.get('分科会名') || row._rawData[1] || '');
         const matchSession = formSessionStr.match(/[A-Za-z]\d+/);
         const formSessionId = matchSession ? matchSession[0].toUpperCase() : formSessionStr.toUpperCase();
         
         if (formSessionId === sessionId.toUpperCase()) {
-          const qText = row.get('質問') || row._rawData[5] || '';
-          const opText = row.get('意見') || row.get('感想') || row._rawData[4] || '';
+          const qText = row.get('実践報告に対する質問を入力してください。') || row.get('質問') || row._rawData[5] || '';
+          const opText = row.get('実践報告に対する感想や意見を入力してください。') || row.get('意見') || row._rawData[4] || '';
           textData += `質問: ${qText} (意見: ${opText})\n`;
         }
       }
@@ -243,11 +243,11 @@ app.post('/api/gemini/analyze', async (c) => {
       const rRows = await withRetry(() => rSheet.getRows());
       const records = [];
       for (const row of rRows) {
-        const formSessionStr = String(row.get('分科会を選択してください') || row.get('分科会名') || row._rawData[1] || '');
+        const formSessionStr = String(row.get('記録会場を選択してください。') || row.get('分科会を選択してください') || row.get('分科会名') || row._rawData[1] || '');
         const matchSession = formSessionStr.match(/[A-Za-z]\d+/);
         const formSessionId = matchSession ? matchSession[0].toUpperCase() : formSessionStr.toUpperCase();
         if (formSessionId === sessionId.toUpperCase()) {
-          const recordText = row.get('記録') || row.get('文字起こし') || row._rawData[2] || '';
+          const recordText = row.get('分科会発表の音声文字起こしを入力してください。') || row.get('記録') || row._rawData[2] || '';
           if (recordText) records.push(recordText);
         }
       }

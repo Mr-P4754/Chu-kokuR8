@@ -7,6 +7,7 @@
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "google-auth-library": "^11.0.0",
     "google-spreadsheet": "^5.3.0",
     "hono": "^4.13.0"
