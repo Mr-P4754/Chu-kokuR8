@@ -285,11 +285,25 @@
         const result = await response.json();
         if (!result.success) throw new Error(result.error);
 
+        // APIから返却されたJSONデータを直接画面に描画（スプレッドシートへの反映ラグを回避）
+        try {
+          const aiDataParsed = JSON.parse(result.data);
+          if (type === 'QUESTIONS') {
+            renderAIQuestions(aiDataParsed);
+            latestAITime = Date.now();
+          } else if (type === 'RECORDS') {
+            renderAIRecords(aiDataParsed);
+          }
+        } catch (parseErr) {
+          console.error("JSON Parse error:", parseErr);
+        }
+
         btn.innerHTML = originalHtml;
         btn.disabled = false;
         btn.classList.remove('opacity-70');
         
-        fetchQuestions(); // AI結果を含めて再取得
+        // 裏で全体のデータ（質問ステータス等）を同期
+        fetchQuestions(); 
       } catch (err) {
         alert('AI実行エラー: ' + err.message);
         btn.innerHTML = originalHtml;
