@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>分科会 | 意見・感想・質問集約システム</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+  <script>
+    // 本番環境用
+    const API_BASE_URL = 'https://my-sheet-api.shouichiigi.workers.dev';
+    
+    // URLパラメータからセッションIDを取得（例: ?session=A2）、デフォルトは'A1'
+    const urlParams = new URLSearchParams(window.location.search);
+    let SESSION_ID = urlParams.get('session') || 'A1';
+    
+    let currentQuestions = [];
+    let isAdmin = false;
+    let latestAITime = 0;
+
+    window.onload = async function() {
+      document.title = `分科会 ${SESSION_ID} | 意見・感想・質問集約システム`;
+      initSessionSelect();
+      switchTab('tab-questions');
+      
+      fetchQuestions();
+    };
+
+    function initSessionSelect() {
+      const select = document.getElementById('session-select');
+      if (!select) return;
+      
+      const sessions = ['A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8'];
+      sessions.forEach(session => {
+        const option = document.createElement('option');
+        option.value = session;
+        option.text = session;
+        if (session === String(SESSION_ID).toUpperCase()) option.selected = true;
+        select.appendChild(option);
+      });
+    }
+
+    function changeSession() {
+      const newSession = document.getElementById('session-select').value;
+      if (newSession === SESSION_ID) return;
+      
+      SESSION_ID = newSession;
+      document.title = `分科会 ${SESSION_ID} | 意見・感想・質問集約システム`;
+      
+      // 画面をクリアして再取得
+      currentQuestions = [];
+      renderQuestions();
+      document.getElementById('ai-questions-container').innerHTML = '';
+      document.getElementById('ai-records-container').innerHTML = '';
+      
+      fetchQuestions();
+    }
+
+    function escapeHTML(str) {
+      if (!str) return '';
+      return String(str).replace(/[&<>'"]/g, tag => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+      }[tag]));
+    }
+
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+      document.querySelectorAll('.tab-btn').forEach(el => {
+        el.classList.remove('border-indigo-500', 'text-indigo-600');
+        el.classList.add('border-transparent', 'text-gray-500');
+      });
+      document.getElementById(tabId).classList.remove('hidden');
+      document.getElementById('btn-' + tabId).classList.add('border-indigo-500', 'text-indigo-600');
+      document.getElementById('btn-' + tabId).classList.remove('border-transparent', 'text-gray-500');
+    }
+
+    async function fetchQuestions() {
+      const btn = document.getElementById('refreshBtn');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 更新中...'; }
+      
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/questions?sessionId=${SESSION_ID}`);
+        const result = await response.json();
+        if (!result.success) throw new Error(result.error);
+        
+        currentQuestions = result.data.questions;
+        renderQuestions();
+
+        if (result.data.aiSummaries) {
+          const aiData = result.data.aiSummaries;
+          latestAITime = aiData.qTime || 0;
+          renderAIQuestions(aiData.questions);
+          renderAIRecords(aiData.records);
+        }
+      } catch (err) {
+        alert('取得エラー: ' + err.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync-alt"></i> 最新情報に更新'; }
+      }
+    }
+
+    function renderQuestions() {
+      const container = document.getElementById('questions-container');
+      container.innerHTML = '';
+      
+      const filter = document.getElementById('typeFilter') ? document.getElementById('typeFilter').value : 'all';
+      
+      if (currentQuestions.length === 0) {
+        container.innerHTML = '<p class="text-gray-500 p-4 bg-white rounded shadow-sm border border-gray-100">データがありません。</p>';
+        return;
+      }
+      
+      let hasVisibleCards = false;
+
+      currentQuestions.forEach(q => {
+        if (q.is_hidden && !isAdmin) return;
+        
+        const isAns = q.status === '回答済';
+        const statusColor = isAns ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
+        const hiddenBadge = q.is_hidden ? '<span class="ml-2 px-2 py-1 bg-gray-500 text-white text-xs rounded shadow-sm"><i class="fas fa-eye-slash"></i> 非表示</span>' : '';
+        // AI分析済バッジ
+        const isAnalyzed = (q.raw_time && latestAITime && q.raw_time <= latestAITime && !q.is_hidden);
+        const aiBadge = isAnalyzed ? '<span class="ml-2 px-2 py-1 bg-blue-100 text-blue-800 text-xs font-bold rounded shadow-sm"><i class="fas fa-robot"></i> 分析済</span>' : '';
+        
+        let adminHeader = '';
+        let adminControls = '';
+        if (isAdmin) {
+          const newStatus = isAns ? '未回答' : '回答済';
+          adminControls = `
+            <div class="mt-4 pt-3 border-t border-gray-100 flex gap-2">
+              <button onclick="updateStatus(${q.rowIndex}, '${newStatus}', ${q.is_hidden})" class="text-xs bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded hover:bg-indigo-100 font-medium">
+                <i class="fas fa-exchange-alt"></i> ${newStatus}へ切替
+              </button>
+              <button onclick="updateStatus(${q.rowIndex}, '${q.status}', ${!q.is_hidden})" class="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-200 font-medium">
+                ${q.is_hidden ? '<i class="fas fa-eye"></i> 表示する' : '<i class="fas fa-eye-slash"></i> 非表示にする'}
+              </button>
+            </div>
+          `;
+          
+          adminHeader = `
+            <div class="flex justify-between items-start mb-3">
+              <div class="flex items-center">
+                <span class="px-2.5 py-1 rounded text-xs font-bold ${statusColor}">${q.status}</span>
+                ${hiddenBadge}
+                ${aiBadge}
+              </div>
+              <div class="text-xs text-gray-400">${q.timestamp}</div>
+            </div>
+            <div class="mb-3">
+              <span class="text-sm font-bold text-gray-800"><i class="fas fa-user-circle text-gray-300"></i> ${escapeHTML(q.name)}</span> 
+              <span class="text-xs text-gray-500 ml-2">${escapeHTML(q.school)}</span>
+            </div>
+          `;
+        }
+
+        const normalTimeHtml = !isAdmin ? `<div class="text-xs text-gray-400 font-normal">${q.timestamp}</div>` : '';
+
+        if (q.opinion && (filter === 'all' || filter === 'opinion')) {
+          hasVisibleCards = true;
+          const opinionCard = `
+            <div class="bg-white shadow-sm rounded-lg p-4 sm:p-5 border-l-4 border-gray-400 mb-4 ${q.is_hidden ? 'opacity-50' : ''}">
+              ${adminHeader}
+              <div>
+                <div class="flex justify-between items-end mb-2">
+                  <div class="text-xs font-bold text-gray-500">【意見・感想】</div>
+                  ${normalTimeHtml}
+                </div>
+                <p class="text-sm text-gray-700 whitespace-pre-wrap">${escapeHTML(q.opinion)}</p>
+              </div>
+              ${adminControls}
+            </div>
+          `;
+          container.innerHTML += opinionCard;
+        }
+
+        if (q.question && (filter === 'all' || filter === 'question')) {
+          hasVisibleCards = true;
+          const questionCard = `
+            <div class="bg-white shadow-sm rounded-lg p-4 sm:p-5 border-l-4 ${isAns && isAdmin ? 'border-green-400' : 'border-indigo-400'} mb-4 ${q.is_hidden ? 'opacity-50' : ''}">
+              ${adminHeader}
+              <div>
+                <div class="flex justify-between items-end mb-2">
+                  <div class="text-xs font-bold text-indigo-400">【質問】</div>
+                  ${normalTimeHtml}
+                </div>
+                <p class="text-[15px] font-medium text-indigo-900 whitespace-pre-wrap">${escapeHTML(q.question)}</p>
+              </div>
+              ${adminControls}
+            </div>
+          `;
+          container.innerHTML += questionCard;
+        }
+      });
+
+      if (!hasVisibleCards) {
+        container.innerHTML = '<p class="text-gray-500 p-4 bg-white rounded shadow-sm border border-gray-100">該当するデータがありません。</p>';
+      }
+    }
+
+    async function updateStatus(rowIndex, status, isHidden) {
+      const target = currentQuestions.find(q => q.rowIndex === rowIndex);
+      if(target) { target.status = status; target.is_hidden = isHidden; renderQuestions(); }
+      
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/questions/status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rowIndex, status, isHidden })
+        });
+        const result = await response.json();
+        if (!result.success) throw new Error(result.error);
+      } catch (err) {
+        alert('更新失敗: ' + err.message);
+        fetchQuestions();
+      }
+    }
+
+    async function loginAdmin() {
+      if (isAdmin) {
+        if (confirm('通常モードに戻りますか？')) {
+          isAdmin = false;
+          document.getElementById('adminLoginBtn').innerHTML = '<i class="fas fa-lock"></i> 管理者';
+          document.getElementById('adminLoginBtn').classList.replace('text-yellow-400', 'text-indigo-200');
+          document.getElementById('admin-ai-questions').classList.add('hidden');
+          document.getElementById('admin-ai-records').classList.add('hidden');
+          
+          document.querySelectorAll('.admin-only-tab').forEach(el => el.classList.add('hidden'));
+          if (!document.getElementById('tab-records-form').classList.contains('hidden')) {
+            switchTab('tab-questions');
+          }
+          
+          renderQuestions();
+        }
+        return;
+      }
+      
+      const pin = prompt('管理者PINを入力してください');
+      if (!pin) return;
+      
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/admin/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: pin })
+        });
+        const result = await response.json();
+
+        if (result.success && result.data === true) {
+          isAdmin = true;
+          document.getElementById('adminLoginBtn').innerHTML = '<i class="fas fa-unlock"></i> 管理モード';
+          document.getElementById('adminLoginBtn').classList.replace('text-indigo-200', 'text-yellow-400');
+          document.getElementById('admin-ai-questions').classList.remove('hidden');
+          document.getElementById('admin-ai-records').classList.remove('hidden');
+          
+          document.querySelectorAll('.admin-only-tab').forEach(el => el.classList.remove('hidden'));
+          
+          renderQuestions();
+        } else {
+          alert('PINが違います');
+        }
+      } catch (err) {
+        alert('認証エラー: ' + err.message);
+      }
+    }
+
+    async function triggerAI(type) {
+      const btn = event.currentTarget;
+      const originalHtml = btn.innerHTML;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 解析中... (約10〜30秒)';
+      btn.disabled = true;
+      btn.classList.add('opacity-70');
+      
+      let scope = 'all';
+      if (type === 'QUESTIONS') {
+        const scopeRadio = document.querySelector('input[name="ai-scope"]:checked');
+        if (scopeRadio) scope = scopeRadio.value;
+      }
+      
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/gemini/analyze`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: SESSION_ID, analysisType: type, scope: scope })
+        });
+        const result = await response.json();
+        if (!result.success) throw new Error(result.error);
+
+        btn.innerHTML = originalHtml;
+        btn.disabled = false;
+        btn.classList.remove('opacity-70');
+        
+        fetchQuestions(); // AI結果を含めて再取得
+      } catch (err) {
+        alert('AI実行エラー: ' + err.message);
+        btn.innerHTML = originalHtml;
+        btn.disabled = false;
+        btn.classList.remove('opacity-70');
+      }
+    }
+
+    function renderAIQuestions(data) {
+      const container = document.getElementById('ai-questions-container');
+      if (!data) {
+        container.innerHTML = '<p class="text-gray-500 bg-white p-4 rounded shadow-sm border border-gray-100">まだ分析結果がありません。担当者が実行すると表示されます。</p>';
+        return;
+      }
+      
+      let html = `
+        <div class="bg-indigo-50 border border-indigo-100 p-5 rounded-lg mb-6 shadow-sm">
+          <h3 class="font-bold text-indigo-900 mb-2"><i class="fas fa-chart-pie text-indigo-500 mr-1"></i> 全体傾向</h3>
+          <p class="text-sm text-indigo-800 leading-relaxed">${escapeHTML(data.overall_summary)}</p>
+        </div>
+        <div class="space-y-4">
+      `;
+      
+      if (data.topics && data.topics.length > 0) {
+        data.topics.forEach((t, i) => {
+          html += `
+            <div class="bg-white shadow-sm border border-gray-200 p-5 rounded-lg">
+              <div class="flex items-center justify-between mb-3 border-b pb-2">
+                <h4 class="font-bold text-gray-800"><span class="text-indigo-500 mr-2 text-lg">論点 ${i+1}</span>${escapeHTML(t.topic_title)}</h4>
+                <span class="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-xs font-bold shadow-inner">関連 ${t.count}件</span>
+              </div>
+              <p class="text-sm text-gray-600 mb-4 leading-relaxed">${escapeHTML(t.summary)}</p>
+              <div class="bg-gray-50 p-4 rounded-md border border-gray-100">
+                <div class="text-xs text-gray-400 mb-2 font-bold"><i class="fas fa-quote-left text-gray-300 mr-1"></i> 代表的な質問</div>
+                <ul class="list-disc pl-5 text-sm text-gray-700 space-y-1">
+                  ${t.key_questions.map(kq => `<li>${escapeHTML(kq)}</li>`).join('')}
+                </ul>
+              </div>
+            </div>
+          `;
+        });
+      }
+      container.innerHTML = html + '</div>';
+    }
+
+    function renderAIRecords(data) {
+      const container = document.getElementById('ai-records-container');
+      if (!data) {
+        container.innerHTML = '<p class="text-gray-500 bg-white p-4 rounded shadow-sm border border-gray-100">まだ要約がありません。担当者が実行すると表示されます。</p>';
+        return;
+      }
+      
+      container.innerHTML = `
+        <div class="bg-white shadow-sm border border-gray-200 p-6 rounded-lg mb-6">
+          <h3 class="font-bold text-lg text-indigo-900 mb-4 border-b pb-2"><i class="fas fa-file-alt text-indigo-500 mr-2"></i> 分科会全体の要約</h3>
+          <p class="text-gray-700 text-[15px] leading-loose">${escapeHTML(data.session_summary).replace(/\n/g, '<br>')}</p>
+        </div>
+        
+        <div class="bg-indigo-50 border border-indigo-100 p-6 rounded-lg mb-6 shadow-sm">
+          <h3 class="font-bold text-indigo-900 mb-4"><i class="fas fa-star text-yellow-500 mr-2"></i> 重要なポイント</h3>
+          <ul class="list-disc pl-6 text-indigo-900 text-[15px] space-y-3">
+            ${data.key_takeaways.map(k => `<li>${escapeHTML(k)}</li>`).join('')}
+          </ul>
+        </div>
+        
+        <div class="bg-white shadow-sm border border-gray-200 p-6 rounded-lg">
+          <h3 class="font-bold text-lg text-gray-800 mb-4"><i class="fas fa-comments text-gray-400 mr-2"></i> 今後の課題・議論されたこと</h3>
+          <p class="text-gray-700 text-[15px] leading-loose">${escapeHTML(data.discussion_points).replace(/\n/g, '<br>')}</p>
+        </div>
+      `;
+    }
+  </script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans min-h-screen">
+  <!-- Navbar -->
+  <nav class="bg-indigo-900 text-white shadow-lg sticky top-0 z-50">
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-between items-center h-14">
+      <div class="font-bold text-base sm:text-lg truncate pr-4 flex items-center">
+        <i class="fas fa-chalkboard-teacher mr-2 text-indigo-300"></i>
+        分科会 
+        <select id="session-select" onchange="changeSession()" class="ml-2 bg-indigo-800 text-white border border-indigo-700 rounded px-2 py-1 text-sm outline-none cursor-pointer"></select>
+        <span class="ml-2 hidden sm:inline">| 意見・感想・質問集約システム</span>
+      </div>
+      <div>
+        <button onclick="loginAdmin()" class="text-indigo-200 hover:text-white text-sm font-medium transition" id="adminLoginBtn">
+          <i class="fas fa-lock"></i> 管理者
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Content -->
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 mt-6 pb-20">
+    
+    <!-- Tabs Nav -->
+    <div class="border-b border-gray-200 bg-white px-2 pt-2 rounded-t-lg shadow-sm">
+      <nav class="-mb-px flex space-x-4 sm:space-x-8 overflow-x-auto" aria-label="Tabs">
+        <button id="btn-tab-questions" onclick="switchTab('tab-questions')" class="tab-btn whitespace-nowrap py-3 px-1 border-b-2 font-bold text-sm border-indigo-500 text-indigo-600 transition">
+          <i class="fas fa-comments text-xs mr-1"></i> 感想・質問一覧
+        </button>
+        <button id="btn-tab-form" onclick="switchTab('tab-form')" class="tab-btn whitespace-nowrap py-3 px-1 border-b-2 font-bold text-sm border-transparent text-gray-500 hover:text-gray-700 transition">
+          <i class="fas fa-paper-plane text-xs mr-1"></i> 質問等投稿
+        </button>
+        <button id="btn-tab-ai-questions" onclick="switchTab('tab-ai-questions')" class="tab-btn whitespace-nowrap py-3 px-1 border-b-2 font-bold text-sm border-transparent text-gray-500 hover:text-gray-700 transition">
+          <i class="fas fa-brain text-xs mr-1"></i> 論点
+        </button>
+        <button id="btn-tab-ai-records" onclick="switchTab('tab-ai-records')" class="tab-btn whitespace-nowrap py-3 px-1 border-b-2 font-bold text-sm border-transparent text-gray-500 hover:text-gray-700 transition">
+          <i class="fas fa-microphone-alt text-xs mr-1"></i> 記録（要約）
+        </button>
+        <!-- 管理者専用 記録投稿タブ -->
+        <button id="btn-tab-records-form" onclick="switchTab('tab-records-form')" class="tab-btn hidden whitespace-nowrap py-3 px-1 border-b-2 font-bold text-sm border-transparent text-gray-500 hover:text-gray-700 transition admin-only-tab">
+          <i class="fas fa-file-audio text-xs mr-1"></i> 記録投稿
+        </button>
+      </nav>
+    </div>
+
+    <!-- Tab Contents Container -->
+    <div class="py-6">
+      
+      <!-- Tab 1: Questions -->
+      <div id="tab-questions" class="tab-content">
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-5 gap-3">
+          <h2 class="text-lg font-bold text-gray-800">寄せられた意見・感想・質問</h2>
+          <div class="flex items-center gap-2">
+            <select id="typeFilter" onchange="renderQuestions()" class="bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded shadow-sm text-sm outline-none cursor-pointer">
+              <option value="all">すべて表示</option>
+              <option value="opinion">意見・感想のみ</option>
+              <option value="question">質問のみ</option>
+            </select>
+            <button id="refreshBtn" onclick="fetchQuestions()" class="bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded shadow-sm hover:bg-gray-50 text-sm font-medium transition">
+              <i class="fas fa-sync-alt"></i> 更新
+            </button>
+          </div>
+        </div>
+        <div id="questions-container" class="space-y-4"></div>
+      </div>
+      
+      <!-- Tab 2: Form -->
+      <div id="tab-form" class="tab-content hidden">
+        <div class="bg-white p-2 rounded shadow-sm border border-gray-200">
+          <iframe id="iframe-form" src="https://forms.gle/CCayiFzpR4jfAWQb6" class="w-full h-[75vh] border-0" title="質問投稿フォーム"></iframe>
+        </div>
+      </div>
+      
+      <!-- Tab 3: AI Questions -->
+      <div id="tab-ai-questions" class="tab-content hidden">
+        <div class="flex justify-between items-center mb-5">
+          <h2 class="text-lg font-bold text-gray-800">質問の論点整理</h2>
+        </div>
+        <div id="admin-ai-questions" class="hidden mb-6 bg-white p-4 rounded shadow-sm border border-indigo-200">
+          <p class="text-xs text-gray-500 mb-3"><i class="fas fa-info-circle"></i> AIを呼び出して現在一覧にある質問・意見を整理します。</p>
+          
+          <!-- 分析対象のオプション選択 -->
+          <div class="mb-4 flex items-center gap-4 text-sm text-gray-700">
+            <label class="flex items-center cursor-pointer hover:text-indigo-600 transition">
+              <input type="radio" name="ai-scope" value="all" class="mr-2 cursor-pointer" checked> 全てのデータを論点整理
+            </label>
+            <label class="flex items-center cursor-pointer hover:text-indigo-600 transition">
+              <input type="radio" name="ai-scope" value="new" class="mr-2 cursor-pointer"> 未分析データのみ論点整理
+            </label>
+          </div>
+
+          <button onclick="triggerAI('QUESTIONS')" class="w-full sm:w-auto bg-indigo-600 text-white px-5 py-2.5 rounded shadow hover:bg-indigo-700 font-bold transition">
+            <i class="fas fa-robot mr-2"></i> 論点整理を実行
+          </button>
+        </div>
+        <div id="ai-questions-container"></div>
+      </div>
+      
+      <!-- Tab 4: AI Records -->
+      <div id="tab-ai-records" class="tab-content hidden">
+        <div class="flex justify-between items-center mb-5">
+          <h2 class="text-lg font-bold text-gray-800">分科会記録の要約</h2>
+        </div>
+        <div id="admin-ai-records" class="hidden mb-6 bg-white p-4 rounded shadow-sm border border-indigo-200">
+          <p class="text-xs text-gray-500 mb-3"><i class="fas fa-info-circle"></i> AIを呼び出して音声文字起こしデータ全体を要約します。</p>
+          <button onclick="triggerAI('RECORDS')" class="w-full sm:w-auto bg-indigo-600 text-white px-5 py-2.5 rounded shadow hover:bg-indigo-700 font-bold transition">
+            <i class="fas fa-robot mr-2"></i> 記録要約を実行
+          </button>
+        </div>
+        <div id="ai-records-container"></div>
+      </div>
+
+      <!-- Tab 5: Records Form (管理者のみ) -->
+      <div id="tab-records-form" class="tab-content hidden">
+        <div class="bg-white p-2 rounded shadow-sm border border-gray-200">
+          <iframe src="https://forms.gle/hsCPqy86FtCTHwH76" class="w-full h-[75vh] border-0" title="記録投稿フォーム"></iframe>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
