@@ -201,17 +201,18 @@ app.post('/api/gemini/analyze', async (c) => {
       let textData = '';
       
       for (const row of qRows) {
-        const formSessionStr = String(row._rawData[1] || '');
+        const formSessionStr = String(row.get('分科会を選択してください') || row.get('分科会名') || row._rawData[1] || '');
         const matchSession = formSessionStr.match(/[A-Za-z]\d+/);
         const formSessionId = matchSession ? matchSession[0].toUpperCase() : formSessionStr.toUpperCase();
         
         if (formSessionId === sessionId.toUpperCase()) {
-          // scope==='new' の場合の時間フィルタ処理は簡略化（フロントからの要求に合わせて必要なら実装）
-          textData += `質問: ${row._rawData[5]} (意見: ${row._rawData[4]})\n`;
+          const qText = row.get('質問') || row._rawData[5] || '';
+          const opText = row.get('意見') || row.get('感想') || row._rawData[4] || '';
+          textData += `質問: ${qText} (意見: ${opText})\n`;
         }
       }
       
-      if (!textData) throw new Error('No data to analyze');
+      if (!textData.trim()) throw new Error('No data to analyze');
       
       systemInstruction = 'あなたは教育研究大会の質疑応答モデレーターです。提供された質問と意見から論点を整理し、スキーマに従って出力してください。';
       prompt = `以下の分科会${sessionId}の質問データを分析してください:\n${textData}`;
@@ -242,11 +243,12 @@ app.post('/api/gemini/analyze', async (c) => {
       const rRows = await withRetry(() => rSheet.getRows());
       const records = [];
       for (const row of rRows) {
-        const formSessionStr = String(row._rawData[1] || '');
+        const formSessionStr = String(row.get('分科会を選択してください') || row.get('分科会名') || row._rawData[1] || '');
         const matchSession = formSessionStr.match(/[A-Za-z]\d+/);
         const formSessionId = matchSession ? matchSession[0].toUpperCase() : formSessionStr.toUpperCase();
         if (formSessionId === sessionId.toUpperCase()) {
-          records.push(row._rawData[2]);
+          const recordText = row.get('記録') || row.get('文字起こし') || row._rawData[2] || '';
+          if (recordText) records.push(recordText);
         }
       }
       
