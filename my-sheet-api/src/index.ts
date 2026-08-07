@@ -7,6 +7,7 @@ type Bindings = {
   GOOGLE_PRIVATE_KEY: string;
   SPREADSHEET_ID: string;
   GEMINI_API_KEY: string;
+  GEMINI_MODEL?: string;
   ADMIN_PIN?: string;
 };
 
@@ -243,11 +244,23 @@ app.post('/api/gemini/analyze', async (c) => {
       const rRows = await withRetry(() => rSheet.getRows());
       const records = [];
       for (const row of rRows) {
-        const formSessionStr = String(row.get('記録会場を選択してください。') || row.get('分科会を選択してください') || row.get('分科会名') || row._rawData[1] || '');
+        const formSessionStr = String(
+          row.get('記録会場を選択してください。') || 
+          row.get('記録会場を選択してください') || 
+          row.get('参加した分科会') || 
+          row.get('分科会を選択してください') || 
+          row.get('分科会名') || 
+          row._rawData[1] || ''
+        );
         const matchSession = formSessionStr.match(/[A-Za-z]\d+/);
         const formSessionId = matchSession ? matchSession[0].toUpperCase() : formSessionStr.toUpperCase();
         if (formSessionId === sessionId.toUpperCase()) {
-          const recordText = row.get('分科会発表の音声文字起こしを入力してください。') || row.get('記録') || row._rawData[2] || '';
+          const recordText = 
+            row.get('分科会発表の音声文字起こしを入力してください。') || 
+            row.get('分科会発表の音声文字起こしを入力してください') || 
+            row.get('記録') || 
+            row.get('文字起こし') || 
+            row._rawData[2] || '';
           if (recordText) records.push(recordText);
         }
       }
@@ -276,23 +289,63 @@ app.post('/api/gemini/analyze', async (c) => {
       }
     };
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${c.env.GEMINI_API_KEY}`;
-    
-    let res;
-    let attempt = 0;
-    while(attempt <= 3) {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (res.status === 429 && attempt < 3) {
-        attempt++;
-        const delay = (1000 * Math.pow(2, attempt)) + (Math.random() * 1000);
-        await new Promise(r => setTimeout(r, delay));
-        continue;
+    // 常に低コスト・高速な Flash モデルを使用
+    // Gemini 3.6-flash を筆頭に、新しいモデルから順に自動フォールバック試行
+    const defaultFlashModels = [
+      'gemini-3.6-flash',
+      'gemini-3.5-flash',
+      'gemini-3.0-flash',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash-exp',
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash'
+    ];
+
+    const flashCandidates = c.env.GEMINI_MODEL 
+      ? Array.from(new Set([c.env.GEMINI_MODEL, ...defaultFlashModels]))
+      : defaultFlashModels;
+
+    let res: Response | null = null;
+    let lastErrorText = '';
+
+    for (const modelCandidate of flashCandidates) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:generateContent?key=${c.env.GEMINI_API_KEY}`;
+      
+      let attempt = 0;
+      while (attempt <= 2) {
+        try {
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          if (res.status === 429 && attempt < 2) {
+            attempt++;
+            const delay = (1000 * Math.pow(2, attempt)) + (Math.random() * 1000);
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+
+          // 404 (モデル不在・廃止) の場合は次の Flash モデル候補を試す
+          if (res.status === 404) {
+            lastErrorText = await res.text();
+            res = null;
+            break; 
+          }
+
+          break;
+        } catch (err: any) {
+          lastErrorText = err.message;
+          res = null;
+          break;
+        }
       }
-      break;
+
+      // 成功 (200 OK) したらループログアウト
+      if (res && res.ok) {
+        break;
+      }
     }
 
     if (!res || !res.ok) {
