@@ -263,7 +263,7 @@
       }
     }
 
-    async function triggerAI(type) {
+    async function triggerAI(type, event) {
       const btn = event.currentTarget;
       const originalHtml = btn.innerHTML;
       btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 解析中... (約10〜30秒)';
@@ -466,7 +466,8 @@
             </label>
           </div>
 
-          <button onclick="triggerAI('QUESTIONS')" class="w-full sm:w-auto bg-indigo-600 text-white px-5 py-2.5 rounded shadow hover:bg-indigo-700 font-bold transition">
+          <!-- ▼修正: onclickの引数に event を追加 -->
+          <button onclick="triggerAI('QUESTIONS', event)" class="w-full sm:w-auto bg-indigo-600 text-white px-5 py-2.5 rounded shadow hover:bg-indigo-700 font-bold transition">
             <i class="fas fa-robot mr-2"></i> 論点整理を実行
           </button>
         </div>
@@ -480,7 +481,9 @@
         </div>
         <div id="admin-ai-records" class="hidden mb-6 bg-white p-4 rounded shadow-sm border border-indigo-200">
           <p class="text-xs text-gray-500 mb-3"><i class="fas fa-info-circle"></i> AIを呼び出して音声文字起こしデータ全体を要約します。</p>
-          <button onclick="triggerAI('RECORDS')" class="w-full sm:w-auto bg-indigo-600 text-white px-5 py-2.5 rounded shadow hover:bg-indigo-700 font-bold transition">
+          
+          <!-- ▼修正: onclickの引数に event を追加 -->
+          <button onclick="triggerAI('RECORDS', event)" class="w-full sm:w-auto bg-indigo-600 text-white px-5 py-2.5 rounded shadow hover:bg-indigo-700 font-bold transition">
             <i class="fas fa-robot mr-2"></i> 記録要約を実行
           </button>
         </div>
