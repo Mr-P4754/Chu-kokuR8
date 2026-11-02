@@ -10,9 +10,34 @@
     // 本番環境用
     const API_BASE_URL = 'https://my-sheet-api.shouichiigi.workers.dev';
     
-    // URLパラメータからセッションIDを取得（例: ?session=A2）、デフォルトは'A1'
+    // 分科会一覧の定義
+    const SESSIONS = [
+      'A-1', 'A-2', 'A-3',
+      'B-1①', 'B-1②',
+      'B-2①', 'B-2②',
+      'B-3①', 'B-3②',
+      'B-4①', 'B-4②'
+    ];
+
+    // 分科会ごとの質問投稿用GoogleフォームURL設定（iframe埋め込み用URL）
+    const SESSION_FORM_URLS = {
+      'A-1': 'https://docs.google.com/forms/d/e/1FAIpQLScVZg9dZwkidr8_wu2hMxNUQPTU0F7IOXaOhp7mO3H1lVZ44A/viewform?embedded=true', // 【意見・質問】A-1分科会 (https://forms.gle/qS17WyaRgfMCBgVo7)
+      'A-2': 'https://docs.google.com/forms/d/e/1FAIpQLSfQiWDmpibNW_gpCKCA9ZIjqV1BclJmLVwgrRGWamKJg-guUQ/viewform?embedded=true', // 【意見・質問】A-2分科会 (https://forms.gle/Sf4SBQ5f6XeAvszR9)
+      'A-3': 'https://docs.google.com/forms/d/e/1FAIpQLSe-lhXHJh02yf6geN_0Mk3yl1MSQbvs0D90rZd6fJCQUSyVSg/viewform?embedded=true', // 【意見・質問】A-3分科会 (https://forms.gle/hANQDg5vgf7hKfcr5)
+      'B-1①': 'https://docs.google.com/forms/d/e/1FAIpQLSeCOOkEf6bl89aRm0-JMPeMKU0gv0tkTplKQAdGe8rXY74Arg/viewform?embedded=true', // 【意見・質問】B-1分科会① (https://forms.gle/Y1hxRgyj3hgTUUhw7)
+      'B-1②': 'https://docs.google.com/forms/d/e/1FAIpQLSdIcINpugIn_efFGBwAsXv2tXYR04u-57pykaNaZzRXa2_mOA/viewform?embedded=true', // 【意見・質問】B-1分科会② (https://forms.gle/wvgdaFMPW9nBdtLo6)
+      'B-2①': 'https://docs.google.com/forms/d/e/1FAIpQLSfkWJ0gmDK7Z7dWVjWTIq_J5rsBkNoEDkyf86ZL8UU40_yl2g/viewform?embedded=true', // 【意見・質問】B-2分科会① (https://forms.gle/7xJr1SGQMFLFQJhs8)
+      'B-2②': 'https://docs.google.com/forms/d/e/1FAIpQLSez-MFSVMt6InIrPAOQmQV4xqWAKIPIaXtWeAbBZkpY8V8FiQ/viewform?embedded=true', // 【意見・質問】B-2分科会② (https://forms.gle/nfjMykFtRHsxX5Td7)
+      'B-3①': 'https://docs.google.com/forms/d/e/1FAIpQLScf--RlfdD8kEK4wDxa7KPSqoAFag1DHPfutsk-SR_VzzbtUQ/viewform?embedded=true', // 【意見・質問】B-3分科会① (https://forms.gle/cHK3mHuyMcvTcwuc9)
+      'B-3②': 'https://docs.google.com/forms/d/e/1FAIpQLScrMIafi00aie9i1vVVr2OsT6pHfKbfz5eoo-0Cteh7Y6Musg/viewform?embedded=true', // 【意見・質問】B-3分科会② (https://forms.gle/Psnsv914ka2bQqaZA)
+      'B-4①': 'https://docs.google.com/forms/d/e/1FAIpQLScjy-ZSf7wjW1uAQfVpu0D5UVvWE4nFtBHKJuV4E1FtNosRAA/viewform?embedded=true', // 【意見・質問】B-4分科会① (https://forms.gle/m3UCYUDciLbW6ZMh6)
+      'B-4②': 'https://docs.google.com/forms/d/e/1FAIpQLSdTi-1-Cvlz4cl9W_FGTIPKADPy0n5dbLbThtMXpwGC3zmw3w/viewform?embedded=true'  // 【意見・質問】B-4分科会② (https://forms.gle/mXYhewfQt2dsjnTb9)
+    };
+
+    // URLパラメータからセッションIDを取得（例: ?session=A-2）、デフォルトは'A-1'
     const urlParams = new URLSearchParams(window.location.search);
-    let SESSION_ID = urlParams.get('session') || 'A1';
+    const rawSessionParam = urlParams.get('session') || 'A-1';
+    let SESSION_ID = SESSIONS.includes(rawSessionParam) ? rawSessionParam : 'A-1';
     
     let currentQuestions = [];
     let isAdmin = false;
@@ -21,25 +46,43 @@
     window.onload = async function() {
       document.title = `分科会 ${SESSION_ID} | 意見・感想・質問集約システム`;
       initSessionSelect();
+      updateFormIframe();
       switchTab('tab-questions');
       
       fetchQuestions();
     };
 
+    /**
+     * 分科会選択プルダウンの初期化
+     */
     function initSessionSelect() {
       const select = document.getElementById('session-select');
       if (!select) return;
       
-      const sessions = ['A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8'];
-      sessions.forEach(session => {
+      SESSIONS.forEach(session => {
         const option = document.createElement('option');
         option.value = session;
         option.text = session;
-        if (session === String(SESSION_ID).toUpperCase()) option.selected = true;
+        if (session === SESSION_ID) option.selected = true;
         select.appendChild(option);
       });
     }
 
+    /**
+     * 選択中の分科会に応じてGoogleフォームのiframeを切り替える
+     */
+    function updateFormIframe() {
+      const iframe = document.getElementById('iframe-form');
+      if (!iframe) return;
+      const targetUrl = SESSION_FORM_URLS[SESSION_ID] || '';
+      if (iframe.getAttribute('src') !== targetUrl) {
+        iframe.src = targetUrl;
+      }
+    }
+
+    /**
+     * プルダウンで分科会を切り替えた際の処理
+     */
     function changeSession() {
       const newSession = document.getElementById('session-select').value;
       if (newSession === SESSION_ID) return;
@@ -47,6 +90,9 @@
       SESSION_ID = newSession;
       document.title = `分科会 ${SESSION_ID} | 意見・感想・質問集約システム`;
       
+      // フォームを該当分科会のものに切り替え
+      updateFormIframe();
+
       // 画面をクリアして再取得
       currentQuestions = [];
       renderQuestions();
@@ -79,7 +125,7 @@
       if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 更新中...'; }
       
       try {
-        const response = await fetch(`${API_BASE_URL}/api/questions?sessionId=${SESSION_ID}`);
+        const response = await fetch(`${API_BASE_URL}/api/questions?sessionId=${encodeURIComponent(SESSION_ID)}`);
         const result = await response.json();
         if (!result.success) throw new Error(result.error);
         
@@ -205,7 +251,7 @@
         const response = await fetch(`${API_BASE_URL}/api/questions/status`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rowIndex, status, isHidden })
+          body: JSON.stringify({ sessionId: SESSION_ID, rowIndex, status, isHidden })
         });
         const result = await response.json();
         if (!result.success) throw new Error(result.error);

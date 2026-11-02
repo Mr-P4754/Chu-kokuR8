@@ -42,7 +42,7 @@ export async function getAuthSpreadsheet(env: any): Promise<GoogleSpreadsheet> {
   const serviceAccountEmail = env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   // \n を実際の改行に変換
   const privateKey = env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
-  const rawSpreadsheetId = env.SPREADSHEET_ID;
+  const rawSpreadsheetId = env.SPREADSHEET_ID || 'https://docs.google.com/spreadsheets/d/166s92vo0Wk_e_PYFj9pF5oIm-0vdM5GfU6_7o5O4Aaw/edit?usp=sharing';
   const spreadsheetId = extractSpreadsheetId(rawSpreadsheetId);
 
   const auth = new JWT({

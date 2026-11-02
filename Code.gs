@@ -1,7 +1,54 @@
-const SHEET_QUESTIONS = '【意見・質問】分科会';
+// 分科会IDと【意見・質問】シート名の対応マップ
+const SESSION_SHEET_MAP = {
+  'A-1': '【意見・質問】A-1分科会',
+  'A-2': '【意見・質問】A-2分科会',
+  'A-3': '【意見・質問】A-3分科会',
+  'B-1①': '【意見・質問】B-1分科会①',
+  'B-1②': '【意見・質問】B-1分科会②',
+  'B-2①': '【意見・質問】B-2分科会①',
+  'B-2②': '【意見・質問】B-2分科会②',
+  'B-3①': '【意見・質問】B-3分科会①',
+  'B-3②': '【意見・質問】B-3分科会②',
+  'B-4①': '【意見・質問】B-4分科会①',
+  'B-4②': '【意見・質問】B-4分科会②'
+};
+
 const SHEET_RECORDS = '【記録】分科会';
 const SHEET_SYSTEM = 'System_Status';
 const SHEET_SUMMARIES = 'AI_Summaries';
+
+/**
+ * 文字列から正規化された分科会ID（例: 'A-1', 'B-1①'）を抽出する
+ */
+function normalizeSessionId(rawText) {
+  if (!rawText) return '';
+  const trimmed = String(rawText).trim();
+  if (SESSION_SHEET_MAP[trimmed]) return trimmed;
+
+  const normalized = trimmed
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/[ー－―‐]/g, '-')
+    .replace(/分科会/g, '');
+
+  const match = normalized.match(/([AB])-?(\d)\s*([①②])?/i);
+  if (match) {
+    const group = match[1].toUpperCase();
+    const num = match[2];
+    const sub = match[3] || '';
+    const candidate = `${group}-${num}${sub}`;
+    if (SESSION_SHEET_MAP[candidate]) return candidate;
+    return candidate;
+  }
+  return trimmed.toUpperCase();
+}
+
+/**
+ * 分科会IDに対応する【意見・質問】シート名を取得する
+ */
+function getQuestionSheetTitle(sessionId) {
+  const normalizedId = normalizeSessionId(sessionId);
+  return SESSION_SHEET_MAP[normalizedId] || `【意見・質問】${normalizedId}分科会`;
+}
 
 /**
  * 初期アクセス時にシートを検証し、不足・破損があれば自己修復する
@@ -90,7 +137,7 @@ function handleRequest(e, method) {
         result = verifyAdmin(params.pin);
         break;
       case 'updateQuestionStatus':
-        result = updateQuestionStatus(params.rowIndex, params.status, params.isHidden);
+        result = updateQuestionStatus(params.sessionId, params.rowIndex, params.status, params.isHidden);
         break;
       case 'runGeminiAnalysis':
         result = runGeminiAnalysis(params.sessionId, params.analysisType, params.scope);
@@ -120,9 +167,12 @@ function verifyAdmin(pin) {
 }
 
 /**
- * ①と③を結合して質問一覧を取得（キャッシュ30秒）
+ * 分科会シートとSystem_Statusシートを結合して質問一覧を取得（キャッシュ30秒）
  */
-function getQuestions(sessionId) {
+function getQuestions(rawSessionId) {
+  const sessionId = normalizeSessionId(rawSessionId);
+  const questionSheetTitle = getQuestionSheetTitle(sessionId);
+
   const cache = CacheService.getScriptCache();
   const cacheKey = 'questions_session_' + sessionId;
   const cachedData = cache.get(cacheKey);
@@ -131,7 +181,7 @@ function getQuestions(sessionId) {
   }
   
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const qSheet = ss.getSheetByName(SHEET_QUESTIONS);
+  const qSheet = ss.getSheetByName(questionSheetTitle);
   if (!qSheet) return [];
   
   const qData = qSheet.getDataRange().getValues();
@@ -143,7 +193,7 @@ function getQuestions(sessionId) {
   if (sysSheet && sysSheet.getLastRow() > 1) {
     const sysData = sysSheet.getDataRange().getValues();
     for (let i = 1; i < sysData.length; i++) {
-      if (sysData[i][0] === SHEET_QUESTIONS) {
+      if (sysData[i][0] === questionSheetTitle) {
         sysMap[sysData[i][1]] = {
           status: sysData[i][2],
           is_hidden: sysData[i][3] === true || String(sysData[i][3]).toUpperCase() === 'TRUE'
@@ -152,28 +202,33 @@ function getQuestions(sessionId) {
     }
   }
   
+  const headers = qData[0].map(h => String(h).trim());
+  const hasSessionColumn = headers.some(h => h.includes('分科会')) || headers.length >= 6;
+
   let result = [];
   for (let i = 1; i < qData.length; i++) {
-    // 修正: フォーム側の分科会名（B列）からID(A1〜B8等)を抽出して比較する
-    const formSessionStr = String(qData[i][1]);
-    const matchSession = formSessionStr.match(/[A-Za-z]\d+/);
-    const formSessionId = matchSession ? matchSession[0].toUpperCase() : formSessionStr.toUpperCase();
-    
-    if (formSessionId === String(sessionId).toUpperCase()) {
-      const rowIndex = i + 1;
-      const sysInfo = sysMap[rowIndex] || { status: '未回答', is_hidden: false };
-      result.push({
-        rowIndex: rowIndex,
-        timestamp: qData[i][0] instanceof Date ? Utilities.formatDate(qData[i][0], Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm') : qData[i][0],
-        raw_time: qData[i][0] instanceof Date ? qData[i][0].getTime() : new Date(qData[i][0]).getTime(), // 追加: AI分析済判定用のミリ秒データ
-        name: qData[i][2],
-        school: qData[i][3],
-        opinion: qData[i][4],
-        question: qData[i][5],
-        status: sysInfo.status,
-        is_hidden: sysInfo.is_hidden
-      });
-    }
+    const row = qData[i];
+    const timestampVal = row[0];
+    const name = hasSessionColumn ? row[2] : row[1];
+    const school = hasSessionColumn ? row[3] : row[2];
+    const opinion = hasSessionColumn ? row[4] : row[3];
+    const question = hasSessionColumn ? row[5] : row[4];
+
+    if (!timestampVal && !name && !opinion && !question) continue;
+
+    const rowIndex = i + 1;
+    const sysInfo = sysMap[rowIndex] || { status: '未回答', is_hidden: false };
+    result.push({
+      rowIndex: rowIndex,
+      timestamp: timestampVal instanceof Date ? Utilities.formatDate(timestampVal, Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm') : timestampVal,
+      raw_time: timestampVal instanceof Date ? timestampVal.getTime() : new Date(timestampVal).getTime(),
+      name: name,
+      school: school,
+      opinion: opinion,
+      question: question,
+      status: sysInfo.status,
+      is_hidden: sysInfo.is_hidden
+    });
   }
   
   try {
@@ -184,23 +239,25 @@ function getQuestions(sessionId) {
   return result;
 }
 
-function updateQuestionStatus(rowIndex, status, isHidden) {
-  // ★ 修正: ステータス更新処理（シートの読み書き）にも排他制御を追加
+/**
+ * 質問の回答ステータス・非表示フラグを更新する
+ */
+function updateQuestionStatus(rawSessionId, rowIndex, status, isHidden) {
   const lock = LockService.getScriptLock();
   
-  // 10秒待機（通常は数十ミリ秒で完了します）
   if (!lock.tryLock(10000)) {
     throw new Error('システム混雑のためステータスの更新に失敗しました。数秒後に再度お試しください。');
   }
 
   try {
+    const targetSheetTitle = rawSessionId ? getQuestionSheetTitle(rawSessionId) : '【意見・質問】A-1分科会';
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sysSheet = ss.getSheetByName(SHEET_SYSTEM);
     const sysData = sysSheet.getDataRange().getValues();
     
     let found = false;
     for (let i = 1; i < sysData.length; i++) {
-      if (sysData[i][0] === SHEET_QUESTIONS && String(sysData[i][1]) === String(rowIndex)) {
+      if (sysData[i][0] === targetSheetTitle && String(sysData[i][1]) === String(rowIndex)) {
         sysSheet.getRange(i + 1, 3).setValue(status);
         sysSheet.getRange(i + 1, 4).setValue(isHidden);
         sysSheet.getRange(i + 1, 5).setValue(new Date());
@@ -210,34 +267,35 @@ function updateQuestionStatus(rowIndex, status, isHidden) {
     }
     
     if (!found) {
-      sysSheet.appendRow([SHEET_QUESTIONS, rowIndex, status, isHidden, new Date()]);
+      sysSheet.appendRow([targetSheetTitle, rowIndex, status, isHidden, new Date()]);
     }
     
-    // キャッシュのクリア対象を新しい分科会形式（A1〜A3, B1〜B8）に変更
+    // キャッシュのクリア対象を新しい分科会形式に変更
     const cache = CacheService.getScriptCache();
-    const sessions = ['A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8'];
+    const sessions = Object.keys(SESSION_SHEET_MAP);
     sessions.forEach(s => cache.remove('questions_session_' + s));
     
     return true;
   } finally {
-    // 成功・失敗に関わらず必ずロックを解放する
     lock.releaseLock();
   }
 }
 
-function getRecords(sessionId) {
+/**
+ * 記録シートから該当分科会の文字起こしデータを取得する
+ */
+function getRecords(rawSessionId) {
+  const sessionId = normalizeSessionId(rawSessionId);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const rSheet = ss.getSheetByName(SHEET_RECORDS);
   if (!rSheet) return [];
   const rData = rSheet.getDataRange().getValues();
   let result = [];
   for (let i = 1; i < rData.length; i++) {
-    // 修正: アルファベットと数字の組み合わせを抽出
     const formSessionStr = String(rData[i][1]);
-    const matchSession = formSessionStr.match(/[A-Za-z]\d+/);
-    const formSessionId = matchSession ? matchSession[0].toUpperCase() : formSessionStr;
+    const formSessionId = normalizeSessionId(formSessionStr);
 
-    if (formSessionId === String(sessionId).toUpperCase()) {
+    if (formSessionId === sessionId) {
       result.push(rData[i][2]);
     }
   }
@@ -245,11 +303,12 @@ function getRecords(sessionId) {
 }
 
 /**
- * Gemini 2.5 Flash 呼び出し処理
+ * Gemini 3.8 Flash 呼び出し処理
  */
+function runGeminiAnalysis(rawSessionId, analysisType, scope) {
+  const sessionId = normalizeSessionId(rawSessionId);
+  const questionSheetTitle = getQuestionSheetTitle(sessionId);
 
-function runGeminiAnalysis(sessionId, analysisType, scope) {
-  // 関数全体のロックを削除し、APIの並列リクエストを許可
   const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
   if (!apiKey) throw new Error('GEMINI_API_KEY が設定されていません。');
 
@@ -259,8 +318,8 @@ function runGeminiAnalysis(sessionId, analysisType, scope) {
   
   if (analysisType === 'QUESTIONS') {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const qSheet = ss.getSheetByName(SHEET_QUESTIONS);
-    if (!qSheet) throw new Error('質問シートがありません');
+    const qSheet = ss.getSheetByName(questionSheetTitle);
+    if (!qSheet) throw new Error(`質問シート（${questionSheetTitle}）がありません`);
     
     let latestAITime = 0;
     if (scope === 'new') {
@@ -269,22 +328,26 @@ function runGeminiAnalysis(sessionId, analysisType, scope) {
     }
 
     const qData = qSheet.getDataRange().getValues();
+    if (qData.length <= 1) throw new Error('分析するデータがありません');
+
+    const headers = qData[0].map(h => String(h).trim());
+    const hasSessionColumn = headers.some(h => h.includes('分科会')) || headers.length >= 6;
+
     let textData = '';
     let targetCount = 0;
     
     for (let i = 1; i < qData.length; i++) {
-      const formSessionStr = String(qData[i][1]);
-      const matchSession = formSessionStr.match(/[A-Za-z]\d+/);
-      const formSessionId = matchSession ? matchSession[0].toUpperCase() : formSessionStr;
-      
-      if (formSessionId === String(sessionId).toUpperCase()) {
-        if (scope === 'new') {
-          const raw_time = qData[i][0] instanceof Date ? qData[i][0].getTime() : new Date(qData[i][0]).getTime();
-          if (raw_time <= latestAITime) continue;
-        }
-        textData += `質問: ${qData[i][5]} (意見: ${qData[i][4]})\n`;
-        targetCount++;
+      const row = qData[i];
+      const opinion = hasSessionColumn ? row[4] : row[3];
+      const question = hasSessionColumn ? row[5] : row[4];
+      if (!opinion && !question) continue;
+
+      if (scope === 'new') {
+        const raw_time = row[0] instanceof Date ? row[0].getTime() : new Date(row[0]).getTime();
+        if (raw_time <= latestAITime) continue;
       }
+      textData += `質問: ${question} (意見: ${opinion})\n`;
+      targetCount++;
     }
     
     if (targetCount === 0) throw new Error(scope === 'new' ? '未分析の新しいデータがありません' : '分析するデータがありません');
@@ -328,7 +391,7 @@ function runGeminiAnalysis(sessionId, analysisType, scope) {
     };
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
   
   const payload = {
     "system_instruction": { "parts": [{ "text": systemInstruction }] },
@@ -377,7 +440,7 @@ function runGeminiAnalysis(sessionId, analysisType, scope) {
   
   aiResponseText = aiResponseText.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
   
-  // ★ 修正: スプレッドシートへの書き込み（数ミリ秒）のみを排他制御する
+  // スプレッドシートへの書き込みのみを排他制御する
   const writeLock = LockService.getScriptLock();
   if (writeLock.tryLock(10000)) {
     try {
@@ -394,7 +457,8 @@ function runGeminiAnalysis(sessionId, analysisType, scope) {
   return aiResponseText;
 }
 
-function getLatestAISummaries(sessionId) {
+function getLatestAISummaries(rawSessionId) {
+  const sessionId = normalizeSessionId(rawSessionId);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const aiSheet = ss.getSheetByName(SHEET_SUMMARIES);
   if (!aiSheet) return { questions: null, records: null };
@@ -404,7 +468,7 @@ function getLatestAISummaries(sessionId) {
   let qTime = 0, rTime = 0;
   
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][1]) === String(sessionId)) {
+    if (normalizeSessionId(String(data[i][1])) === sessionId) {
       const type = data[i][2];
       const time = new Date(data[i][4]).getTime();
       if (type === 'QUESTIONS' && time > qTime) {
@@ -430,6 +494,6 @@ function getLatestAISummaries(sessionId) {
   return {
     questions: safeParse(latestQuestions),
     records: safeParse(latestRecords),
-    qTime: qTime // 追加: フロントエンド（latestAITime）に最新のAI実行時間を渡す
+    qTime: qTime
   };
 }
