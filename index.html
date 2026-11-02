@@ -402,6 +402,10 @@
         return;
       }
       
+      const takeawaysHtml = (data.key_takeaways && data.key_takeaways.length > 0)
+        ? `<ul class="list-disc pl-6 text-indigo-900 text-[15px] space-y-3">${data.key_takeaways.map(k => `<li>${escapeHTML(k)}</li>`).join('')}</ul>`
+        : '<p class="text-indigo-900 text-[15px]">該当なし</p>';
+
       container.innerHTML = `
         <div class="bg-white shadow-sm border border-gray-200 p-6 rounded-lg mb-6">
           <h3 class="font-bold text-lg text-indigo-900 mb-4 border-b pb-2"><i class="fas fa-file-alt text-indigo-500 mr-2"></i> 分科会全体の要約</h3>
@@ -410,9 +414,7 @@
         
         <div class="bg-indigo-50 border border-indigo-100 p-6 rounded-lg mb-6 shadow-sm">
           <h3 class="font-bold text-indigo-900 mb-4"><i class="fas fa-star text-yellow-500 mr-2"></i> 重要なポイント</h3>
-          <ul class="list-disc pl-6 text-indigo-900 text-[15px] space-y-3">
-            ${data.key_takeaways.map(k => `<li>${escapeHTML(k)}</li>`).join('')}
-          </ul>
+          ${takeawaysHtml}
         </div>
         
         <div class="bg-white shadow-sm border border-gray-200 p-6 rounded-lg">
@@ -420,6 +422,41 @@
           <p class="text-gray-700 text-[15px] leading-loose">${escapeHTML(data.discussion_points).replace(/\n/g, '<br>')}</p>
         </div>
       `;
+    }
+
+    /**
+     * 選択中の分科会の記録データおよび記録要約をスプレッドシートから削除する
+     */
+    async function deleteRecords(event) {
+      if (!confirm(`分科会 ${SESSION_ID} の記録（表示中の要約およびスプレッドシート上の記録データ）をすべて削除しますか？\n※この操作は取り消せません。`)) {
+        return;
+      }
+
+      const btn = event.currentTarget;
+      const originalHtml = btn.innerHTML;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 削除中...';
+      btn.disabled = true;
+      btn.classList.add('opacity-70');
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/records/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: SESSION_ID })
+        });
+        const result = await response.json();
+        if (!result.success) throw new Error(result.error);
+
+        // 画面上の要約表示をクリア
+        renderAIRecords(null);
+        alert(`分科会 ${SESSION_ID} の記録を削除しました。`);
+      } catch (err) {
+        alert('削除エラー: ' + err.message);
+      } finally {
+        btn.innerHTML = originalHtml;
+        btn.disabled = false;
+        btn.classList.remove('opacity-70');
+      }
     }
   </script>
 </head>
@@ -528,10 +565,15 @@
         <div id="admin-ai-records" class="hidden mb-6 bg-white p-4 rounded shadow-sm border border-indigo-200">
           <p class="text-xs text-gray-500 mb-3"><i class="fas fa-info-circle"></i> AIを呼び出して音声文字起こしデータ全体を要約します。</p>
           
-          <!-- ▼修正: onclickの引数に event を追加 -->
-          <button onclick="triggerAI('RECORDS', event)" class="w-full sm:w-auto bg-indigo-600 text-white px-5 py-2.5 rounded shadow hover:bg-indigo-700 font-bold transition">
-            <i class="fas fa-robot mr-2"></i> 記録要約を実行
-          </button>
+          <div class="flex flex-wrap gap-3">
+            <!-- ▼修正: onclickの引数に event を追加 -->
+            <button onclick="triggerAI('RECORDS', event)" class="w-full sm:w-auto bg-indigo-600 text-white px-5 py-2.5 rounded shadow hover:bg-indigo-700 font-bold transition">
+              <i class="fas fa-robot mr-2"></i> 記録要約を実行
+            </button>
+            <button onclick="deleteRecords(event)" class="w-full sm:w-auto bg-red-600 text-white px-5 py-2.5 rounded shadow hover:bg-red-700 font-bold transition">
+              <i class="fas fa-trash-alt mr-2"></i> 記録を削除
+            </button>
+          </div>
         </div>
         <div id="ai-records-container"></div>
       </div>

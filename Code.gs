@@ -27,7 +27,7 @@ function normalizeSessionId(rawText) {
 
   const normalized = trimmed
     .replace(/[Ａ-Ｚａ-ｚ０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
-    .replace(/[ー－―‐]/g, '-')
+    .replace(/[-‐‑‒–—―ー－−]/g, '-')
     .replace(/分科会/g, '');
 
   const match = normalized.match(/([AB])-?(\d)\s*([①②])?/i);
@@ -141,6 +141,9 @@ function handleRequest(e, method) {
         break;
       case 'runGeminiAnalysis':
         result = runGeminiAnalysis(params.sessionId, params.analysisType, params.scope);
+        break;
+      case 'deleteRecords':
+        result = deleteRecords(params.sessionId);
         break;
       case 'getLatestAISummaries':
         result = getLatestAISummaries(params.sessionId);
@@ -294,12 +297,66 @@ function getRecords(rawSessionId) {
   for (let i = 1; i < rData.length; i++) {
     const formSessionStr = String(rData[i][1]);
     const formSessionId = normalizeSessionId(formSessionStr);
+    const recordText = String(rData[i][2] || '').trim();
 
-    if (formSessionId === sessionId) {
-      result.push(rData[i][2]);
+    if (formSessionId === sessionId && recordText) {
+      result.push(recordText);
     }
   }
   return result;
+}
+
+/**
+ * 該当分科会の記録データおよび記録要約データをスプレッドシートから削除する
+ */
+function deleteRecords(rawSessionId) {
+  const sessionId = normalizeSessionId(rawSessionId);
+  if (!sessionId) throw new Error('sessionId が指定されていません');
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) {
+    throw new Error('システム混雑のため削除に失敗しました。数秒後に再度お試しください。');
+  }
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let deletedRecordsCount = 0;
+    let deletedSummariesCount = 0;
+
+    // 1. 【記録】分科会シートから該当分科会の行を末尾から逆順に削除
+    const rSheet = ss.getSheetByName(SHEET_RECORDS);
+    if (rSheet && rSheet.getLastRow() > 1) {
+      const rData = rSheet.getDataRange().getValues();
+      for (let i = rData.length - 1; i >= 1; i--) {
+        const formSessionId = normalizeSessionId(String(rData[i][1]));
+        if (formSessionId === sessionId) {
+          rSheet.deleteRow(i + 1);
+          deletedRecordsCount++;
+        }
+      }
+    }
+
+    // 2. AI_Summariesシートから該当分科会のRECORDS要約行を末尾から逆順に削除
+    const aiSheet = ss.getSheetByName(SHEET_SUMMARIES);
+    if (aiSheet && aiSheet.getLastRow() > 1) {
+      const aiData = aiSheet.getDataRange().getValues();
+      for (let i = aiData.length - 1; i >= 1; i--) {
+        const rowSessionId = normalizeSessionId(String(aiData[i][1]));
+        const rowType = String(aiData[i][2]);
+        if (rowSessionId === sessionId && rowType === 'RECORDS') {
+          aiSheet.deleteRow(i + 1);
+          deletedSummariesCount++;
+        }
+      }
+    }
+
+    return {
+      deletedRecordsCount: deletedRecordsCount,
+      deletedSummariesCount: deletedSummariesCount
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /**
@@ -352,12 +409,16 @@ function runGeminiAnalysis(rawSessionId, analysisType, scope) {
     
     if (targetCount === 0) throw new Error(scope === 'new' ? '未分析の新しいデータがありません' : '分析するデータがありません');
     
-    systemInstruction = 'あなたは教育研究大会の質疑応答モデレーターです。提供された質問と意見から論点を整理し、スキーマに従って出力してください。';
-    prompt = `以下の分科会${sessionId}の質問データを分析してください:\n${textData}`;
+    systemInstruction = [
+      'あなたは教育研究大会の質疑応答モデレーターです。',
+      '提供された質問と意見のデータのみに基づき、論点を整理してスキーマに従って出力してください。',
+      '【厳守事項】提供されたテキストに含まれていない内容や一般的な教育論を勝手に推測・創作（ハルシネーション）しないでください。'
+    ].join('\n');
+    prompt = `以下の分科会${sessionId}の質問・意見データのみを分析してください（データにない内容は一切追加しないこと）:\n---\n${textData}---`;
     responseSchema = {
       "type": "OBJECT",
       "properties": {
-        "overall_summary": { "type": "STRING", "description": "全体傾向(200字)" },
+        "overall_summary": { "type": "STRING", "description": "提供されたデータに基づく全体傾向(最大200字程度)" },
         "topics": {
           "type": "ARRAY",
           "items": {
@@ -378,14 +439,20 @@ function runGeminiAnalysis(rawSessionId, analysisType, scope) {
     const records = getRecords(sessionId);
     if (records.length === 0) throw new Error('分析する記録データがありません');
     
-    systemInstruction = 'あなたは教育研究大会の記録係です。分科会の音声文字起こしから要点を整理し、スキーマに従って要約を出力してください。';
-    prompt = `以下の分科会${sessionId}の文字起こしデータを要約してください:\n${records.join('\n')}`;
+    systemInstruction = [
+      'あなたは教育研究大会の正確な記録係です。以下の【絶対厳守ルール】に従って、提供された「分科会の音声文字起こしデータ」から要点を整理し、スキーマに従って出力してください。',
+      '【絶対厳守ルール】',
+      '1. 提供された文字起こしテキストに明記されている事実・発言内容のみに基づいて要約を作成してください。',
+      '2. 文字起こしテキストに存在しない内容（一般的な教育用語、ICT活用、個別最適な学び、架空の発表・質疑応答など）を推測・補完・創作（ハルシネーション）することは絶対に禁止します。',
+      '3. 入力が「テスト」などの単語のみ、または実質的な発表・議論の内容が読み取れない短いテキストである場合は、絶対に架空の文章を作らず、session_summary には「有効な文字起こしデータが不足しているため要約を作成できません（入力内容：…）。」のように入力された事実のみをそのまま記載し、key_takeaways は空配列 []、discussion_points は「該当なし」としてください。'
+    ].join('\n');
+    prompt = `以下は分科会${sessionId}の実際の文字起こしデータです。このテキストに書かれている内容のみを忠実に要約してください（書かれていない事柄は一切追加・創作しないでください）:\n---\n${records.join('\n')}\n---`;
     responseSchema = {
       "type": "OBJECT",
       "properties": {
-        "session_summary": { "type": "STRING", "description": "分科会全体の要約(400字)" },
-        "key_takeaways": { "type": "ARRAY", "items": { "type": "STRING" } },
-        "discussion_points": { "type": "STRING", "description": "今後の課題や議論されたこと" }
+        "session_summary": { "type": "STRING", "description": "提供された文字起こしに基づく分科会全体の要約(最大400字程度。内容が短い・テスト等の場合は無理に膨らませず入力された事実のみを短く記載すること)" },
+        "key_takeaways": { "type": "ARRAY", "items": { "type": "STRING" }, "description": "文字起こしから読み取れる重要なポイント(該当する内容がない場合は空配列)" },
+        "discussion_points": { "type": "STRING", "description": "文字起こし内で実際に議論されたことや課題(該当する内容がない場合は「該当なし」)" }
       },
       "required": ["session_summary", "key_takeaways", "discussion_points"]
     };
@@ -397,6 +464,7 @@ function runGeminiAnalysis(rawSessionId, analysisType, scope) {
     "system_instruction": { "parts": [{ "text": systemInstruction }] },
     "contents": [{ "parts": [{ "text": prompt }] }],
     "generationConfig": {
+      "temperature": 0.1,
       "response_mime_type": "application/json",
       "response_schema": responseSchema
     }

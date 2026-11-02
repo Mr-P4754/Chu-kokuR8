@@ -52,10 +52,10 @@ function normalizeSessionId(rawText: string): string {
   const trimmed = String(rawText).trim();
   if (SESSION_SHEET_MAP[trimmed]) return trimmed;
 
-  // 全角英数字・ハイフンを半角に統一し、「分科会」という語を除去してパターン抽出
+  // 全角英数字・各種ハイフンを半角に統一し、「分科会」という語を除去してパターン抽出
   const normalized = trimmed
     .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
-    .replace(/[ー－―‐]/g, '-')
+    .replace(/[-‐‑‒–—―ー－−]/g, '-')
     .replace(/分科会/g, '');
 
   const match = normalized.match(/([AB])-?(\d)\s*([①②])?/i);
@@ -113,6 +113,35 @@ function extractQuestionRowData(row: any) {
     '';
 
   return { timestamp, name, school, opinion, question };
+}
+
+/**
+ * 【記録】分科会シートの1行から分科会IDと文字起こしテキストを抽出する
+ */
+function extractRecordRowData(row: any) {
+  const rawData: any[] = row._rawData || [];
+  const formSessionStr = String(
+    row.get('記録会場を選択してください。') ??
+      row.get('記録会場を選択してください') ??
+      row.get('参加した分科会') ??
+      row.get('分科会を選択してください') ??
+      row.get('分科会名') ??
+      rawData[1] ??
+      ''
+  );
+  const recordText = String(
+    row.get('分科会発表の音声文字起こしを入力してください。') ??
+      row.get('分科会発表の音声文字起こしを入力してください') ??
+      row.get('記録') ??
+      row.get('文字起こし') ??
+      rawData[2] ??
+      ''
+  ).trim();
+
+  return {
+    formSessionId: normalizeSessionId(formSessionStr),
+    recordText,
+  };
 }
 
 /**
@@ -358,13 +387,16 @@ app.post('/api/gemini/analyze', async (c) => {
         throw new Error(scope === 'new' ? '未分析の新しいデータがありません' : '分析するデータがありません');
       }
 
-      systemInstruction =
-        'あなたは教育研究大会の質疑応答モデレーターです。提供された質問と意見から論点を整理し、スキーマに従って出力してください。';
-      prompt = `以下の分科会${sessionId}の質問データを分析してください:\n${textData}`;
+      systemInstruction = [
+        'あなたは教育研究大会の質疑応答モデレーターです。',
+        '提供された質問と意見のデータのみに基づき、論点を整理してスキーマに従って出力してください。',
+        '【厳守事項】提供されたテキストに含まれていない内容や一般的な教育論を勝手に推測・創作（ハルシネーション）しないでください。',
+      ].join('\n');
+      prompt = `以下の分科会${sessionId}の質問・意見データのみを分析してください（データにない内容は一切追加しないこと）:\n---\n${textData}---`;
       responseSchema = {
         type: 'OBJECT',
         properties: {
-          overall_summary: { type: 'STRING', description: '全体傾向(200字)' },
+          overall_summary: { type: 'STRING', description: '提供されたデータに基づく全体傾向(最大200字程度)' },
           topics: {
             type: 'ARRAY',
             items: {
@@ -388,39 +420,39 @@ app.post('/api/gemini/analyze', async (c) => {
       const rRows = await withRetry(() => rSheet.getRows());
       const records = [];
       for (const row of rRows) {
-        const formSessionStr = String(
-          row.get('記録会場を選択してください。') ||
-            row.get('記録会場を選択してください') ||
-            row.get('参加した分科会') ||
-            row.get('分科会を選択してください') ||
-            row.get('分科会名') ||
-            row._rawData[1] ||
-            ''
-        );
-        const formSessionId = normalizeSessionId(formSessionStr);
-        if (formSessionId === sessionId) {
-          const recordText =
-            row.get('分科会発表の音声文字起こしを入力してください。') ||
-            row.get('分科会発表の音声文字起こしを入力してください') ||
-            row.get('記録') ||
-            row.get('文字起こし') ||
-            row._rawData[2] ||
-            '';
-          if (recordText) records.push(recordText);
+        const { formSessionId, recordText } = extractRecordRowData(row);
+        if (formSessionId === sessionId && recordText) {
+          records.push(recordText);
         }
       }
 
       if (records.length === 0) throw new Error('分析する記録データがありません');
 
-      systemInstruction =
-        'あなたは教育研究大会の記録係です。分科会の音声文字起こしから要点を整理し、スキーマに従って要約を出力してください。';
-      prompt = `以下の分科会${sessionId}の文字起こしデータを要約してください:\n${records.join('\n')}`;
+      systemInstruction = [
+        'あなたは教育研究大会の正確な記録係です。以下の【絶対厳守ルール】に従って、提供された「分科会の音声文字起こしデータ」から要点を整理し、スキーマに従って出力してください。',
+        '【絶対厳守ルール】',
+        '1. 提供された文字起こしテキストに明記されている事実・発言内容のみに基づいて要約を作成してください。',
+        '2. 文字起こしテキストに存在しない内容（一般的な教育用語、ICT活用、個別最適な学び、架空の発表・質疑応答など）を推測・補完・創作（ハルシネーション）することは絶対に禁止します。',
+        '3. 入力が「テスト」などの単語のみ、または実質的な発表・議論の内容が読み取れない短いテキストである場合は、絶対に架空の文章を作らず、session_summary には「有効な文字起こしデータが不足しているため要約を作成できません（入力内容：…）。」のように入力された事実のみをそのまま記載し、key_takeaways は空配列 []、discussion_points は「該当なし」としてください。',
+      ].join('\n');
+      prompt = `以下は分科会${sessionId}の実際の文字起こしデータです。このテキストに書かれている内容のみを忠実に要約してください（書かれていない事柄は一切追加・創作しないでください）:\n---\n${records.join('\n')}\n---`;
       responseSchema = {
         type: 'OBJECT',
         properties: {
-          session_summary: { type: 'STRING', description: '分科会全体の要約(400字)' },
-          key_takeaways: { type: 'ARRAY', items: { type: 'STRING' } },
-          discussion_points: { type: 'STRING', description: '今後の課題や議論されたこと' },
+          session_summary: {
+            type: 'STRING',
+            description:
+              '提供された文字起こしに基づく分科会全体の要約(最大400字程度。内容が短い・テスト等の場合は無理に膨らませず入力された事実のみを短く記載すること)',
+          },
+          key_takeaways: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+            description: '文字起こしから読み取れる重要なポイント(該当する内容がない場合は空配列)',
+          },
+          discussion_points: {
+            type: 'STRING',
+            description: '文字起こし内で実際に議論されたことや課題(該当する内容がない場合は「該当なし」)',
+          },
         },
         required: ['session_summary', 'key_takeaways', 'discussion_points'],
       };
@@ -430,6 +462,7 @@ app.post('/api/gemini/analyze', async (c) => {
       system_instruction: { parts: [{ text: systemInstruction }] },
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
+        temperature: 0.1,
         response_mime_type: 'application/json',
         response_schema: responseSchema,
       },
@@ -527,7 +560,58 @@ app.post('/api/gemini/analyze', async (c) => {
   }
 });
 
-// 4. POST /api/admin/verify : 管理者PINの認証
+// 4. POST /api/records/delete : 該当分科会の記録データおよび記録要約データの削除
+app.post('/api/records/delete', async (c) => {
+  try {
+    const { sessionId: rawSessionId } = await c.req.json();
+    if (!rawSessionId) return c.json({ success: false, error: 'sessionId is required' });
+
+    const sessionId = normalizeSessionId(rawSessionId);
+    const doc = await getAuthSpreadsheet(c.env);
+
+    let deletedRecordsCount = 0;
+    let deletedSummariesCount = 0;
+
+    // 1. 【記録】分科会シートから該当分科会の行を末尾から逆順に削除
+    const rSheet = doc.sheetsByTitle[SHEET_RECORDS];
+    if (rSheet) {
+      const rRows = await withRetry(() => rSheet.getRows());
+      for (let i = rRows.length - 1; i >= 0; i--) {
+        const { formSessionId } = extractRecordRowData(rRows[i]);
+        if (formSessionId === sessionId) {
+          await withRetry(() => rRows[i].delete());
+          deletedRecordsCount++;
+        }
+      }
+    }
+
+    // 2. AI_Summariesシートから該当分科会のRECORDS要約行を末尾から逆順に削除
+    const aiSheet = doc.sheetsByTitle[SHEET_SUMMARIES];
+    if (aiSheet) {
+      const aiRows = await withRetry(() => aiSheet.getRows());
+      for (let i = aiRows.length - 1; i >= 0; i--) {
+        const rowSessionId = normalizeSessionId(String(aiRows[i].get('session_id') || ''));
+        const rowType = String(aiRows[i].get('type') || '');
+        if (rowSessionId === sessionId && rowType === 'RECORDS') {
+          await withRetry(() => aiRows[i].delete());
+          deletedSummariesCount++;
+        }
+      }
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        deletedRecordsCount,
+        deletedSummariesCount,
+      },
+    });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500);
+  }
+});
+
+// 5. POST /api/admin/verify : 管理者PINの認証
 app.post('/api/admin/verify', async (c) => {
   try {
     const { pin } = await c.req.json();
